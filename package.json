@@ -1,7 +1,7 @@
 {
   "name": "credvault",
   "version": "0.13.0",
-  "license": "PolyForm-Shield-1.0.0",
+  "license": "PolyForm-Strict-1.0.0",
   "packageManager": "pnpm@9.15.0",
   "description": "Keep the credentials an automation signs in with: sealed at rest, shared through SSM, every use audited, expiries watched.",
   "type": "module",

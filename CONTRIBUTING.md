@@ -1,6 +1,6 @@
 # Contributing
 
-Fork it, change it, send a pull request. The license (PolyForm Shield 1.0.0, LICENSE.md) lets you use, change and share this code for any purpose except a product that competes with Wren Automation.
+The license (PolyForm Strict 1.0.0, LICENSE.md) permits noncommercial use only, with no changes and no redistribution. Pull requests are by invitation.
 
 When you send a change, you agree to these terms:
 

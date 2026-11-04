@@ -82,4 +82,4 @@ cannot read another owner.
 - A wrong write is undone from history. A push that cannot keep the old state writes nothing.
 - Each app has its own Keychain item, SSM path and env prefix, so two apps never share a secret by accident. Each owner of an app has its own path and an AWS session that reaches only it.
 
-PolyForm Shield 1.0.0: use, change and share for any purpose except a product that competes with Wren Automation. See LICENSE.md and CONTRIBUTING.md.
+PolyForm Strict 1.0.0: noncommercial use only; no changes, no redistribution. A commercial license: wrenautomation.com. See LICENSE.md and CONTRIBUTING.md.
