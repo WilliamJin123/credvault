@@ -74,7 +74,7 @@ Phase one writes nothing and asks: "this would replace NAME (held since …, n c
 - `env set` and `keep` refuse an env name a vault key fills, and print the vault command.
 - explore `keep` takes `key: "cloudflare@pages-deploy"` with `env`: the value goes to the vault at a new address and fills that env name. `creds key add <vendor>@<label> --env <NAME>` does the same by hand.
 - Reading: `creds key ls [vendor]` (address, purposes, env names, id, age; no secret). Code asks `keysFor(vendor, purpose)`. A shell asks for the env name.
-- The seven Cloudflare tokens move in as `cloudflare@<label>`, each with its purpose and its env name. The flat names stay as the projection, so no reader changes. A copy, not a move: nothing is removed.
+- The Cloudflare tokens (six; the seventh name is the account id) move in as `cloudflare@<label>`, each with its env name. A copy, not a move: nothing is removed. **Not done (WA-1129):** the projection also writes ring names for each usable key of a vendor, so the copy would add `CLOUDFLARE_API_KEY`, `CLOUDFLARE_API_KEY_1..5` and `NUM_CLOUDFLARE`: six tokens of different scopes as one pool. The rule for a key with its own env name comes first.
 
 ## Order
 
@@ -100,3 +100,4 @@ Phase one writes nothing and asks: "this would replace NAME (held since …, n c
 - 2026-11-05: Code that owns a name replaces with no question (my call): a rolled refresh token, an account's own consent names, bootstrap after a failed API check, values derived from a key pair, `AUTOBROWSE_ACCOUNTS`, `env restore` (the command names the version), a renewal (the lapse is the reason).
 - 2026-11-05: From explore, a label that holds another key has no yes path (my call): a new value at an address is a rotation, and `creds key rotate` is a person's command. `creds key add` on a held label asks first and takes `--confirm`.
 - 2026-11-05: An env name a vault key fills is not set, removed or kept by hand (my call): a hand-set value would split env from vault.
+- 2026-11-05: The Cloudflare copy waits (my call, WA-1129): a vault key with its own env name still joins the vendor ring, and scoped tokens are not one pool. Options there; nothing was copied.
