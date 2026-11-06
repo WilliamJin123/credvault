@@ -82,6 +82,7 @@ export {
   apiKeySchema,
   applyProjection,
   envKeys,
+  inRing,
   isProjectedName,
   KEY_ACCOUNT,
   KEY_SITE,

@@ -580,11 +580,12 @@ describe("no silent replace in the vault", () => {
       mk("cloudflare", "pages", { secret: sk("a"), env: ["CLOUDFLARE_API_TOKEN"] }),
     );
     const env = memoryEnvStore({ KEEP: "1" });
+    // Its own name and no purpose: no ring name.
     expect(await applyProjection(env, [pages])).toEqual({
-      put: ["CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"],
+      put: ["CLOUDFLARE_API_TOKEN"],
       removed: [],
     });
-    expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("a"));
+    expect(env.values).toEqual({ KEEP: "1", CLOUDFLARE_API_TOKEN: sk("a") });
 
     const rotated = apiKeySchema.parse({
       ...pages,
@@ -594,11 +595,13 @@ describe("no silent replace in the vault", () => {
     await applyProjection(env, [rotated]);
     expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("b"));
 
-    // A value set by hand under the name: nothing is written, not even the ring name.
+    // A value set by hand under the name: nothing is written, not even the ring name
+    // (the purpose puts this key in the ring).
     env.values.CLOUDFLARE_API_TOKEN = "set-by-hand";
     const next = apiKeySchema.parse({
       ...rotated,
       secret: sk("c"),
+      purposes: ["default"],
       previous: [...rotated.previous, { id: keyId(sk("b")), revokedAt: T2 }],
     });
     const err = await applyProjection(env, [next]).then(
@@ -607,17 +610,75 @@ describe("no silent replace in the vault", () => {
     );
     expect(err).toBeInstanceOf(WouldReplace);
     expect(err).toMatchObject({ key: "CLOUDFLARE_API_TOKEN", heldLength: 11 });
-    expect(env.values).toMatchObject({
-      CLOUDFLARE_API_TOKEN: "set-by-hand",
-      CLOUDFLARE_API_KEY: sk("b"),
-    });
+    expect(env.values).toEqual({ KEEP: "1", CLOUDFLARE_API_TOKEN: "set-by-hand" });
     await applyProjection(env, [next], { replace: true });
     expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("c"));
+    expect(env.values.CLOUDFLARE_API_KEY).toBe(sk("c"));
 
     // A key that drops the env name leaves the name as it is.
     const bare = apiKeySchema.parse({ ...next, env: [] });
     expect(await applyProjection(env, [bare])).toEqual({ put: [], removed: [] });
     expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("c"));
+  });
+
+  it("a key with its own env name and no purpose is in no ring", async () => {
+    const pages = mk("cloudflare", "pages", { secret: sk("a"), env: ["CLOUDFLARE_PAGES_TOKEN"] });
+    const tunnel = mk("cloudflare", "tunnel", {
+      secret: sk("b"),
+      env: ["CLOUDFLARE_TUNNEL_TOKEN"],
+      madeAt: T1,
+    });
+    // Scoped tokens only: their own names, no pool.
+    const scoped = [pages, tunnel].map((k) => apiKeySchema.parse(k));
+    expect(projectKeys(scoped).get("cloudflare")).toEqual([
+      { name: "CLOUDFLARE_PAGES_TOKEN", value: sk("a") },
+      { name: "CLOUDFLARE_TUNNEL_TOKEN", value: sk("b") },
+    ]);
+    const store = memoryKeys(scoped);
+    expect(await keysFor(store, { owner: "wren", vendor: "cloudflare" })).toEqual([]);
+
+    // A purpose puts a named key in the ring; a key with no env name is in it as before.
+    const main = mk("cloudflare", "main", {
+      secret: sk("c"),
+      env: ["CLOUDFLARE_MAIN_TOKEN"],
+      purposes: ["default"],
+      madeAt: T2,
+    });
+    const plain = mk("cloudflare", "plain", { secret: sk("d"), madeAt: T2 });
+    await store.put(main);
+    await store.put(plain);
+    const ring = await keysFor(store, { owner: "wren", vendor: "cloudflare" });
+    expect(ring.map((k) => k.account)).toEqual(["main", "plain"]);
+    const all = [...scoped, apiKeySchema.parse(main), apiKeySchema.parse(plain)];
+    expect(
+      projectKeys(all)
+        .get("cloudflare")
+        ?.map((e) => e.name),
+    ).toEqual([
+      "CLOUDFLARE_API_KEY",
+      "CLOUDFLARE_API_KEY_1",
+      "NUM_CLOUDFLARE",
+      "CLOUDFLARE_MAIN_TOKEN",
+      "CLOUDFLARE_PAGES_TOKEN",
+      "CLOUDFLARE_TUNNEL_TOKEN",
+    ]);
+
+    // Ring names an older version wrote for a scoped token are cleared.
+    const env = memoryEnvStore({
+      CLOUDFLARE_API_KEY: sk("a"),
+      CLOUDFLARE_API_KEY_1: sk("b"),
+      NUM_CLOUDFLARE: "1",
+      CLOUDFLARE_PAGES_TOKEN: sk("a"),
+      CLOUDFLARE_TUNNEL_TOKEN: sk("b"),
+    });
+    expect(await applyProjection(env, scoped)).toEqual({
+      put: [],
+      removed: ["CLOUDFLARE_API_KEY", "CLOUDFLARE_API_KEY_1", "NUM_CLOUDFLARE"],
+    });
+    expect(Object.keys(env.values).sort()).toEqual([
+      "CLOUDFLARE_PAGES_TOKEN",
+      "CLOUDFLARE_TUNNEL_TOKEN",
+    ]);
   });
 });
 

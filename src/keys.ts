@@ -168,6 +168,14 @@ function ringOrder<T extends Pick<ApiKey, "account" | "purposes" | "madeAt">>(
   );
 }
 
+/**
+ * A key with its own env name and no purpose is read by that name alone: it is in no ring.
+ * Scoped tokens of one vendor (a Pages token, a tunnel token) are not one pool (WA-1129).
+ * A purpose puts a named key back in the ring.
+ */
+export const inRing = (k: Pick<ApiKey, "env" | "purposes">): boolean =>
+  k.env.length === 0 || k.purposes.length > 0;
+
 // ---------------------------------------------------------------------------
 // The store
 // ---------------------------------------------------------------------------
@@ -350,7 +358,7 @@ export interface KeysForOptions {
 }
 
 /**
- * The live keys of `vendor` for `owner`, in ring order: the key holding
+ * The live ring keys of `vendor` for `owner` (`inRing`), in ring order: the key holding
  * `purpose`, then the `default` key, then the rest by `madeAt` (ties by
  * account, `env-2` before `env-10`). The same key id appears once.
  */
@@ -358,7 +366,7 @@ export async function keysFor(store: KeyStore, o: KeysForOptions): Promise<ApiKe
   const now = o.now ?? Date.now();
   const ring = ringOrder(
     (await store.list()).filter(
-      (k) => k.site === o.vendor && k.owner === o.owner && liveAt(k, now),
+      (k) => k.site === o.vendor && k.owner === o.owner && liveAt(k, now) && inRing(k),
     ),
     o.purpose,
   );
@@ -409,7 +417,8 @@ export function isProjectedName(name: string): boolean {
  * The env names for a set of keys of one owner, per vendor: `<BASE>_API_KEY`
  * from the first key in ring order (the `default` one when there is one),
  * `<BASE>_API_KEY_1..n` from the rest, `NUM_<BASE>` = n when n > 0, then each
- * key's own `env` names. Revoked keys are left out; a vendor whose keys are
+ * key's own `env` names. A key with `env` names and no purpose is out of the ring
+ * (`inRing`) and fills its own names only. Revoked keys are left out; a vendor whose keys are
  * all revoked answers an empty list. Keys of several owners throw: project one
  * owner at a time.
  */
@@ -422,13 +431,15 @@ export function projectKeys(keys: ApiKey[]): Map<string, EnvEntry[]> {
   const out = new Map<string, EnvEntry[]>();
   for (const site of [...bySite.keys()].sort()) {
     const base = vendorBase(site);
-    const ring = ringOrder((bySite.get(site) ?? []).filter((k) => k.status !== "revoked"));
+    const usable = (bySite.get(site) ?? []).filter((k) => k.status !== "revoked");
+    const ring = ringOrder(usable.filter(inRing));
     const entries = ring.map((k, i) => ({
       name: i === 0 ? `${base}_API_KEY` : `${base}_API_KEY_${i}`,
       value: k.secret,
     }));
     if (ring.length > 1) entries.push({ name: `NUM_${base}`, value: String(ring.length - 1) });
-    for (const k of ring) for (const name of k.env) entries.push({ name, value: k.secret });
+    for (const k of ringOrder(usable))
+      for (const name of k.env) entries.push({ name, value: k.secret });
     out.set(site, entries);
   }
   return out;
