@@ -74,7 +74,7 @@ Phase one writes nothing and asks: "this would replace NAME (held since …, n c
 - `env set` and `keep` refuse an env name a vault key fills, and print the vault command.
 - explore `keep` takes `key: "cloudflare@pages-deploy"` with `env`: the value goes to the vault at a new address and fills that env name. `creds key add <vendor>@<label> --env <NAME>` does the same by hand.
 - Reading: `creds key ls [vendor]` (address, purposes, env names, id, age; no secret). Code asks `keysFor(vendor, purpose)`. A shell asks for the env name.
-- The Cloudflare tokens (six; the seventh name is the account id) move in as `cloudflare@<label>`, each with its env name. A copy, not a move: nothing is removed. **Not done (WA-1129):** the projection also writes ring names for each usable key of a vendor, so the copy would add `CLOUDFLARE_API_KEY`, `CLOUDFLARE_API_KEY_1..5` and `NUM_CLOUDFLARE`: six tokens of different scopes as one pool. The rule for a key with its own env name comes first.
+- The Cloudflare tokens (six; the seventh name is the account id) move in as `cloudflare@<label>`, each with its env name. A copy, not a move: nothing is removed. **Done 2026-11-05 (WA-1129, credvault 0.14.1):** `cloudflare@api`, `@access`, `@tunnel`, `@tunnel-admin`, `@wren-saas`, `@wren-workers`. No purposes, so each fills its own name only: no `CLOUDFLARE_API_KEY*`, no `NUM_CLOUDFLARE`. No env name or date changed. A process on credvault before 0.14.1 that projects `cloudflare` would add those pool names: deploy it before it changes a Cloudflare key.
 
 ## Order
 
