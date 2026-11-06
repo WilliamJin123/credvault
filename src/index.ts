@@ -58,6 +58,7 @@ export {
   memoryUnshared,
   type PutOptions,
   parseDotenv,
+  REMOVED,
   type SyncedEnvStore,
   ssmEnvStore,
   syncedEnvStore,
@@ -66,6 +67,7 @@ export {
   type Unshared,
   unsharedFile,
   upsertDotenv,
+  WouldReplace,
 } from "./env-store.js";
 export {
   type CredentialHistory,

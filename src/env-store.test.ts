@@ -16,12 +16,14 @@ import {
   memoryUnshared,
   type PutOptions,
   parseDotenv,
+  REMOVED,
   ssmEnvStore,
   syncedEnvStore,
   toDotenv,
   toExports,
   unsharedFile,
   upsertDotenv,
+  WouldReplace,
 } from "./env-store.js";
 
 describe("dotenv helpers", () => {
@@ -76,8 +78,69 @@ describe("expiry", () => {
       "LINKEDIN_TOKEN",
       "NPM_TOKEN",
     ]);
-    await store.put("NPM_TOKEN", "t2");
+    await store.put("NPM_TOKEN", "t2", { replace: true });
     expect((await store.list()).find((e) => e.name === "NPM_TOKEN")?.expiresAt).toBeNull();
+  });
+});
+
+describe("no silent replace", () => {
+  const refused = async (run: Promise<unknown>) =>
+    run.then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+  it("a put on a name that holds another value writes nothing until it says replace", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "credvault-")), ".env");
+    writeFileSync(file, "TOKEN=live-token-1\n");
+    const stores = {
+      memory: memoryEnvStore({ TOKEN: "live-token-1" }),
+      file: envFileStore(file, {}),
+    };
+    for (const [kind, store] of Object.entries(stores)) {
+      const err = await refused(store.put("TOKEN", "other-2"));
+      expect(err, kind).toBeInstanceOf(WouldReplace);
+      expect(err, kind).toMatchObject({ key: "TOKEN", heldLength: 12 });
+      expect(String(err), kind).not.toContain("live-token-1");
+      expect(await store.get("TOKEN"), kind).toBe("live-token-1");
+      // The same value is no replace: a new expiry goes through.
+      await store.put("TOKEN", "live-token-1", { expiresAt: "2026-12-21T00:00:00Z" });
+      await store.put("TOKEN", "other-2", { replace: true });
+      expect(await store.get("TOKEN"), kind).toBe("other-2");
+      await store.put("NEW_NAME", "n");
+    }
+  });
+
+  it("a synced put asks both sides before it writes either", async () => {
+    const local = memoryEnvStore({ HERE: "a" });
+    const shared = memoryEnvStore({ THERE: "b" });
+    const store = syncedEnvStore(local, shared);
+    expect(await refused(store.put("HERE", "x"))).toMatchObject({ where: "this machine" });
+    expect(await refused(store.put("THERE", "x"))).toMatchObject({ where: "the shared store" });
+    expect(local.values).toEqual({ HERE: "a" });
+    expect(shared.values).toEqual({ THERE: "b" });
+    await store.put("THERE", "x", { replace: true });
+    expect([local.values.THERE, shared.values.THERE]).toEqual(["x", "x"]);
+
+    // A value put while the shared store was away never replaces what the store got meanwhile.
+    let up = false;
+    const flaky = {
+      ...shared,
+      get: (n: string) => (up ? shared.get(n) : Promise.reject(new Error("offline"))),
+      put: (n: string, v: string, o?: PutOptions) =>
+        up ? shared.put(n, v, o) : Promise.reject(new Error("offline")),
+    };
+    const unshared = memoryUnshared();
+    const away = syncedEnvStore(local, flaky, { unshared });
+    await expect(away.put("MINTED", "mine")).rejects.toThrow(/kept on this machine only/);
+    await expect(away.put("FREE", "f")).rejects.toThrow(/kept on this machine only/);
+    shared.values.MINTED = "theirs";
+    up = true;
+    expect(await refused(away.share())).toMatchObject({ key: "MINTED" });
+    expect(shared.values).toMatchObject({ MINTED: "theirs", FREE: "f" });
+    expect(unshared.names()).toEqual(["MINTED"]);
+    expect(await away.share({ replace: true })).toEqual(["MINTED"]);
+    expect(shared.values.MINTED).toBe("mine");
   });
 });
 
@@ -126,6 +189,25 @@ describe("ssm store", () => {
     return { ssm: { send } as unknown as SSMClient, params, sent, decrypted };
   };
 
+  it("refuses a replace, and a remove keeps the last value under removed/", async () => {
+    const f = fakeSsm();
+    const store = ssmEnvStore(f.ssm, "/app/config");
+    await store.put("TOKEN", "live-token-1");
+    await expect(store.put("TOKEN", "other-2")).rejects.toBeInstanceOf(WouldReplace);
+    expect(f.params.get("/app/config/TOKEN")?.value).toBe("live-token-1");
+    await store.put("TOKEN", "live-token-1", { expiresAt: "2026-12-21T00:00:00Z" });
+    await store.put("TOKEN", "other-2", { replace: true });
+    expect(f.params.get("/app/config/TOKEN")?.value).toBe("other-2");
+
+    expect(await store.remove("TOKEN")).toBe(true);
+    expect(f.params.has("/app/config/TOKEN")).toBe(false);
+    expect(f.params.get(`/app/config/${REMOVED}/TOKEN`)).toMatchObject({ value: "other-2" });
+    expect(f.params.get(`/app/config/${REMOVED}/TOKEN`)?.description).toMatch(/^removed 20/);
+    expect(await store.remove("TOKEN")).toBe(false);
+    // The name is free again.
+    await store.put("TOKEN", "third-3");
+  });
+
   it("lists names and expiry without decrypting, and reads values only on all/get", async () => {
     const f = fakeSsm();
     const store = ssmEnvStore(f.ssm, "/app/config");
@@ -164,12 +246,12 @@ describe("ssm store", () => {
     expect(f.decrypted).toEqual(["A", "B"]);
     // Changed from elsewhere (another machine): seen once the listing is, read once.
     const other = ssmEnvStore(f.ssm, "/app/config");
-    await other.put("A", "new");
+    await other.put("A", "new", { replace: true });
     expect((await store.all()).find((e) => e.name === "A")?.value).toBe("new");
     expect(await store.get("A")).toBe("new");
     expect(f.decrypted).toEqual(["A", "B", "A"]);
     // A write here is not read back from a stale copy.
-    await store.put("B", "3");
+    await store.put("B", "3", { replace: true });
     expect(await store.get("B")).toBe("3");
   });
 
@@ -193,7 +275,7 @@ describe("env file store", () => {
     writeFileSync(file, "# mine\nKEEP=1\nTOKEN=old\n");
     const env: NodeJS.ProcessEnv = {};
     const store = envFileStore(file, env);
-    await store.put("TOKEN", "new", { expiresAt: "2026-12-21T00:00:00Z" });
+    await store.put("TOKEN", "new", { expiresAt: "2026-12-21T00:00:00Z", replace: true });
     expect(readFileSync(file, "utf8")).toBe(
       "# mine\nKEEP=1\n# TOKEN expires 2026-12-21T00:00:00.000Z\nTOKEN=new\n",
     );
@@ -204,7 +286,7 @@ describe("env file store", () => {
       { name: "TOKEN", updatedAt: null, expiresAt: "2026-12-21T00:00:00.000Z" },
     ]);
     // A put with no expiry clears the old one, as SSM's does.
-    await store.put("TOKEN", "newer");
+    await store.put("TOKEN", "newer", { replace: true });
     expect(readFileSync(file, "utf8")).toBe("# mine\nKEEP=1\nTOKEN=newer\n");
     expect(await store.get("TOKEN")).toBe("newer");
     expect(await store.remove("TOKEN")).toBe(true);
@@ -219,7 +301,7 @@ describe("synced env store", () => {
     const local = memoryEnvStore({ ONLY_HERE: "l" });
     const shared = memoryEnvStore({ ONLY_THERE: "s", BOTH: "old" });
     const store = syncedEnvStore(local, shared);
-    await store.put("BOTH", "new", { expiresAt: "2026-11-21T00:00:00.000Z" });
+    await store.put("BOTH", "new", { expiresAt: "2026-11-21T00:00:00.000Z", replace: true });
     expect(shared.values.BOTH).toBe("new");
     expect(await store.get("ONLY_THERE")).toBe("s");
     expect(await store.getMany(["ONLY_HERE", "ONLY_THERE", "NONE"])).toEqual({

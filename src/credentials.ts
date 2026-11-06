@@ -281,7 +281,7 @@ export function envCredentials(
 /** The shared store's side of a sync (SSM, see env-store.ts). */
 export interface CredentialEnvStore {
   all(): Promise<{ name: string; value: string }[]>;
-  put(name: string, value: string): Promise<void>;
+  put(name: string, value: string, o?: { replace?: boolean }): Promise<void>;
   /** Names only. With `remove`, a push clears the fields a credential no longer has (used codes, a dropped password). */
   list?(): Promise<{ name: string }[]>;
   remove?(name: string): Promise<boolean>;
@@ -325,7 +325,8 @@ export async function pushCredentials(
       if (before) await o.history.keep(site, before);
     }
     const entries = credentialEnv(site, cred, naming);
-    for (const e of entries) await store.put(e.name, e.value);
+    // A push owns its names; what they held is in `history` above.
+    for (const e of entries) await store.put(e.name, e.value, { replace: true });
     if (there && store.remove) {
       const kept = new Set(entries.map((e) => e.name));
       for (const f of CREDENTIAL_ENV_FIELDS) {

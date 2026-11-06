@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { fileAudit, type SecretUse } from "./audit.js";
 import { verifyChain } from "./chain.js";
 import { siteFromEnvName } from "./credentials.js";
-import { type EnvEntry, memoryEnvStore } from "./env-store.js";
+import { type EnvEntry, memoryEnvStore, type PutOptions, WouldReplace } from "./env-store.js";
 import {
   type ApiKey,
   type ApiKeyInput,
@@ -169,9 +169,9 @@ describe("envKeys", () => {
     const env = memoryEnvStore();
     const writes: string[] = [];
     const watched = Object.assign(Object.create(env), {
-      put: async (n: string, v: string) => {
+      put: async (n: string, v: string, o?: PutOptions) => {
         writes.push(n);
-        await env.put(n, v);
+        await env.put(n, v, o);
       },
     }) as typeof env;
     const keys = envKeys(watched);
@@ -425,9 +425,9 @@ describe("env projection", () => {
     const writes: string[] = [];
     const removes: string[] = [];
     const watched = Object.assign(Object.create(env), {
-      put: async (n: string, v: string) => {
+      put: async (n: string, v: string, o?: PutOptions) => {
         writes.push(n);
-        await env.put(n, v);
+        await env.put(n, v, o);
       },
       remove: async (n: string) => {
         removes.push(n);
@@ -524,6 +524,100 @@ describe("env projection", () => {
       vendors: ["exa"],
     });
     expect(odd2).toEqual([{ name: "NUM_EXA", want: null, have: keyId(sk("n")) }]);
+  });
+});
+
+describe("no silent replace in the vault", () => {
+  it("a new secret at a held address is refused unless it names the key it replaced", async () => {
+    const store = memoryKeys([mk("cloudflare", "pages", { secret: sk("a") })]);
+    await expect(store.put(mk("cloudflare", "pages", { secret: sk("b") }))).rejects.toThrow(
+      /cloudflare@pages already holds another secret .*nothing was written/,
+    );
+    expect((await store.get("cloudflare@pages"))?.secret).toBe(sk("a"));
+    // Another field of the same key is no replace.
+    await store.put(mk("cloudflare", "pages", { secret: sk("a"), purposes: ["deploy"] }));
+    // A rotation names the old id.
+    await store.put(
+      mk("cloudflare", "pages", {
+        secret: sk("b"),
+        purposes: ["deploy"],
+        previous: [{ id: keyId(sk("a")), revokedAt: T1 }],
+      }),
+    );
+    expect((await store.get("cloudflare@pages"))?.secret).toBe(sk("b"));
+    // A second key of the vendor takes its own label.
+    await store.put(mk("cloudflare", "dns", { secret: sk("c") }));
+    expect((await store.list()).map((k) => k.address)).toEqual([
+      "cloudflare@dns",
+      "cloudflare@pages",
+    ]);
+  });
+
+  it("an env name belongs to one key of an owner, and is never a ring name", async () => {
+    const store = memoryKeys([
+      mk("cloudflare", "pages", { secret: sk("a"), env: ["CLOUDFLARE_API_TOKEN"] }),
+    ]);
+    await expect(
+      store.put(mk("cloudflare", "dns", { secret: sk("b"), env: ["CLOUDFLARE_API_TOKEN"] })),
+    ).rejects.toThrow(/cloudflare@pages already fills CLOUDFLARE_API_TOKEN/);
+    await expect(
+      store.put(mk("cloudflare", "dns", { secret: sk("b"), env: ["CLOUDFLARE_API_KEY"] })),
+    ).rejects.toThrow(/CLOUDFLARE_API_KEY is a ring name/);
+    expect(() => apiKeySchema.parse(mk("cloudflare", "dns", { env: ["lower"] }))).toThrow();
+    await store.put(mk("cloudflare", "dns", { secret: sk("b"), env: ["CLOUDFLARE_DNS_TOKEN"] }));
+    await store.put(
+      mk("cloudflare", "old", {
+        secret: sk("c"),
+        status: "revoked",
+        revokedAt: T1,
+        env: ["CLOUDFLARE_API_TOKEN"],
+      }),
+    );
+  });
+
+  it("the projection fills env names, replaces a rotated value, and refuses a value the key never had", async () => {
+    const pages = apiKeySchema.parse(
+      mk("cloudflare", "pages", { secret: sk("a"), env: ["CLOUDFLARE_API_TOKEN"] }),
+    );
+    const env = memoryEnvStore({ KEEP: "1" });
+    expect(await applyProjection(env, [pages])).toEqual({
+      put: ["CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"],
+      removed: [],
+    });
+    expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("a"));
+
+    const rotated = apiKeySchema.parse({
+      ...pages,
+      secret: sk("b"),
+      previous: [{ id: keyId(sk("a")), revokedAt: T1 }],
+    });
+    await applyProjection(env, [rotated]);
+    expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("b"));
+
+    // A value set by hand under the name: nothing is written, not even the ring name.
+    env.values.CLOUDFLARE_API_TOKEN = "set-by-hand";
+    const next = apiKeySchema.parse({
+      ...rotated,
+      secret: sk("c"),
+      previous: [...rotated.previous, { id: keyId(sk("b")), revokedAt: T2 }],
+    });
+    const err = await applyProjection(env, [next]).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(WouldReplace);
+    expect(err).toMatchObject({ key: "CLOUDFLARE_API_TOKEN", heldLength: 11 });
+    expect(env.values).toMatchObject({
+      CLOUDFLARE_API_TOKEN: "set-by-hand",
+      CLOUDFLARE_API_KEY: sk("b"),
+    });
+    await applyProjection(env, [next], { replace: true });
+    expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("c"));
+
+    // A key that drops the env name leaves the name as it is.
+    const bare = apiKeySchema.parse({ ...next, env: [] });
+    expect(await applyProjection(env, [bare])).toEqual({ put: [], removed: [] });
+    expect(env.values.CLOUDFLARE_API_TOKEN).toBe(sk("c"));
   });
 });
 

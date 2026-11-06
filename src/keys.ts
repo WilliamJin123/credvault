@@ -12,7 +12,13 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { SecretUse } from "./audit.js";
 import { envSiteName, ROLE_NAME } from "./credentials.js";
-import { type EnvEntry, type EnvStore, memoryEnvStore } from "./env-store.js";
+import {
+  ENV_KEY,
+  type EnvEntry,
+  type EnvStore,
+  memoryEnvStore,
+  WouldReplace,
+} from "./env-store.js";
 import { OWNER_NAME } from "./owner.js";
 
 /** A vendor: lowercase, starts with a letter (`anthropic`, `exa`, `google-maps`). */
@@ -50,6 +56,13 @@ export const apiKeySchema = z
     revokedAt: iso.optional(),
     /** A monthly cap. */
     cap: z.object({ amount: z.number().positive(), unit: z.enum(["calls", "micros"]) }).optional(),
+    /**
+     * Env names this key fills besides the vendor's ring names (`CLOUDFLARE_API_TOKEN`).
+     * The projection writes them. No two keys of one owner that can be used share one.
+     */
+    env: z
+      .array(z.string().regex(ENV_KEY, "an env name is capital letters, digits and _"))
+      .default([]),
     /** The keys this one replaced: ids and times, never a secret. */
     previous: z
       .array(
@@ -219,16 +232,31 @@ export function envKeys(store: EnvStore): KeyStore {
       const name = keyRowName(address);
       const there = await store.get(name);
       if (there !== null) {
-        const held = addressOf(parseRow(name, there));
+        const before = parseRow(name, there);
+        const held = addressOf(before);
         if (held !== address) throw new Error(`key ${address}: row ${name} already holds ${held}`);
+        // A new secret at a held address is a rotation: it names the key it replaced.
+        const was = keyId(before.secret);
+        if (before.secret !== key.secret && !key.previous.some((p) => p.id === was))
+          throw new Error(
+            `key ${address} already holds another secret (${was}); nothing was written. A second key takes its own label; a rotation lists ${was} in \`previous\``,
+          );
       }
+      for (const n of key.env)
+        if (isProjectedName(n))
+          throw new Error(`key ${address}: ${n} is a ring name, set by the projection`);
       // A revoked key holds nothing, so only a key that can be used is checked.
       if (key.status !== "revoked") {
         for (const other of await readAll()) {
-          if (other.site !== key.site || other.owner !== key.owner || other.status === "revoked")
-            continue;
+          if (other.owner !== key.owner || other.status === "revoked") continue;
           const otherAddress = addressOf(other);
           if (otherAddress === address) continue;
+          const names = key.env.filter((n) => other.env.includes(n));
+          if (names.length)
+            throw new Error(
+              `key ${address}: ${otherAddress} already fills ${names.join(", ")} for ${key.owner}; one env name, one key`,
+            );
+          if (other.site !== key.site) continue;
           const shared = key.purposes.filter((p) => other.purposes.includes(p));
           if (shared.length)
             throw new Error(
@@ -238,7 +266,8 @@ export function envKeys(store: EnvStore): KeyStore {
       }
       const row = JSON.stringify(key);
       // An unchanged key writes nothing: no version churn in the key's history.
-      if (there !== row) await store.put(name, row);
+      // The row is the vault's own: the checks above are its replace rule.
+      if (there !== row) await store.put(name, row, { replace: true });
       return key;
     },
 
@@ -379,9 +408,10 @@ export function isProjectedName(name: string): boolean {
 /**
  * The env names for a set of keys of one owner, per vendor: `<BASE>_API_KEY`
  * from the first key in ring order (the `default` one when there is one),
- * `<BASE>_API_KEY_1..n` from the rest, `NUM_<BASE>` = n when n > 0. Revoked
- * keys are left out; a vendor whose keys are all revoked answers an empty
- * list. Keys of several owners throw: project one owner at a time.
+ * `<BASE>_API_KEY_1..n` from the rest, `NUM_<BASE>` = n when n > 0, then each
+ * key's own `env` names. Revoked keys are left out; a vendor whose keys are
+ * all revoked answers an empty list. Keys of several owners throw: project one
+ * owner at a time.
  */
 export function projectKeys(keys: ApiKey[]): Map<string, EnvEntry[]> {
   const owners = [...new Set(keys.map((k) => k.owner))].sort();
@@ -398,6 +428,7 @@ export function projectKeys(keys: ApiKey[]): Map<string, EnvEntry[]> {
       value: k.secret,
     }));
     if (ring.length > 1) entries.push({ name: `NUM_${base}`, value: String(ring.length - 1) });
+    for (const k of ring) for (const name of k.env) entries.push({ name, value: k.secret });
     out.set(site, entries);
   }
   return out;
@@ -406,6 +437,11 @@ export function projectKeys(keys: ApiKey[]): Map<string, EnvEntry[]> {
 export interface ProjectionOptions {
   /** Project these vendors, even ones with no key left (their names are cleared). Default: the vendors in `keys`. */
   vendors?: string[] | undefined;
+  /**
+   * A key's `env` name may hold a value the key never had, and the projection replaces it.
+   * Without it `applyProjection` throws `WouldReplace` and writes nothing.
+   */
+  replace?: boolean | undefined;
 }
 
 /** One name where the store and the vault differ. Ids are `keyId`s; a `NUM_` row holds the number. */
@@ -424,11 +460,11 @@ async function planProjection(
   store: EnvStore,
   keys: ApiKey[],
   o: ProjectionOptions,
-): Promise<(ProjectionChange & { value: string | null })[]> {
+): Promise<ProjectionStep[]> {
   const projected = projectKeys(keys);
   const vendors = [...new Set(o.vendors ?? projected.keys())].sort();
   const listed = (await store.list()).map((e) => e.name);
-  const steps: (ProjectionChange & { value: string | null })[] = [];
+  const steps: ProjectionStep[] = [];
   for (const vendor of vendors) {
     if (!KEY_SITE.test(vendor)) throw new Error(`projection: "${vendor}" is not a vendor name`);
     const num = `NUM_${vendorBase(vendor)}`;
@@ -445,11 +481,14 @@ async function planProjection(
       const value = wanted.get(name) ?? null;
       const want = mark(name, value ?? undefined);
       const have = mark(name, there[name]);
-      if (want !== have) steps.push({ name, want, have, value });
+      if (want !== have)
+        steps.push({ name, want, have, value, heldLength: there[name]?.length ?? 0 });
     }
   }
   return steps;
 }
+
+type ProjectionStep = ProjectionChange & { value: string | null; heldLength: number };
 
 /**
  * What `applyProjection` would change: the names whose stored value is not
@@ -473,6 +512,11 @@ export async function projectionDiff(
  * whose value differs, removes stale `<BASE>_API_KEY_k` (k > n) and a stale
  * `NUM_<BASE>`. A name already equal is not written. Puts go first, then
  * removals. Answers names only.
+ *
+ * Ring names are the projection's own: they are replaced. A key's `env` name is
+ * replaced only when it holds a secret that key had before (a rotation); any
+ * other value throws `WouldReplace` before the first write, unless `o.replace`.
+ * An `env` name no key fills any more is left as it is.
  */
 export async function applyProjection(
   store: EnvStore,
@@ -482,9 +526,16 @@ export async function applyProjection(
   const steps = await planProjection(store, keys, o);
   const put: string[] = [];
   const removed: string[] = [];
+  if (!o.replace)
+    for (const s of steps) {
+      if (s.value === null || s.have === null || isProjectedName(s.name)) continue;
+      const before = keys.find((k) => k.status !== "revoked" && k.env.includes(s.name))?.previous;
+      if (!before?.some((p) => p.id === s.have))
+        throw new WouldReplace(s.name, s.heldLength, "the env store");
+    }
   for (const s of steps) {
     if (s.value === null) continue;
-    await store.put(s.name, s.value);
+    await store.put(s.name, s.value, { replace: true });
     put.push(s.name);
   }
   for (const s of steps) {

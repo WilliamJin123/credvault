@@ -55,6 +55,42 @@ export interface EnvListing {
 export interface PutOptions {
   /** ISO time the value stops working; absent = it does not, or nobody knows. */
   expiresAt?: string | undefined;
+  /**
+   * The name may hold another value, and this put replaces it. Without it such a put
+   * throws `WouldReplace` and writes nothing. Code that owns the name (a token refresh,
+   * a projection) sets it; a surface sets it after a person or an agent confirmed.
+   */
+  replace?: boolean | undefined;
+}
+
+/**
+ * A put met another value under its name and did not write. Holds no value.
+ * 2026-11-05: an agent's write replaced a live token twice with no question asked.
+ */
+export class WouldReplace extends Error {
+  constructor(
+    /** The env name. */
+    readonly key: string,
+    /** Length of the held value: enough to tell a token from an id. */
+    readonly heldLength: number,
+    /** Where it is held, in words: "the shared store", "this machine". */
+    readonly where = "the store",
+  ) {
+    super(`${key} already holds another value in ${where}; nothing was written`);
+    this.name = "WouldReplace";
+  }
+}
+
+/** Throws `WouldReplace` when `held` is another value and the put did not say `replace`. */
+function guard(
+  name: string,
+  value: string,
+  held: string | null | undefined,
+  o: PutOptions | undefined,
+  where?: string,
+): void {
+  if (o?.replace || held === null || held === undefined || held === value) return;
+  throw new WouldReplace(name, held.length, where);
 }
 
 export interface EnvStore {
@@ -191,6 +227,8 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
     get: async (name) => (await getMany([name]))[name] ?? null,
     async put(name, value, o) {
       if (!value) throw new Error(`env store: ${name} is empty`);
+      // Read, then write: SSM has no put-if-equal. Two writers in one second can both pass.
+      if (!o?.replace) guard(name, value, (await getMany([name]))[name], o);
       listed = null;
       known.delete(name);
       await patient(() =>
@@ -209,6 +247,22 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
       );
     },
     async remove(name) {
+      // SSM's delete takes every version. The last value goes to `removed/NAME` first;
+      // a copy that fails stops the remove.
+      const held = (await readNow([name]))[name];
+      if (held === undefined) return false;
+      await patient(() =>
+        ssm.send(
+          new PutParameterCommand({
+            Name: `${prefix}/${REMOVED}/${name}`,
+            Value: held,
+            Description: `removed ${new Date().toISOString()}`,
+            Type: "SecureString",
+            Tier: "Intelligent-Tiering",
+            Overwrite: true,
+          }),
+        ),
+      );
       listed = null;
       known.delete(name);
       try {
@@ -221,6 +275,9 @@ export function ssmEnvStore(ssm: SSMClient, prefix: string): EnvStore {
     },
   };
 }
+
+/** The level under a store's prefix that keeps the last value of each removed name. */
+export const REMOVED = "removed";
 
 export function memoryEnvStore(initial: Record<string, string> = {}): EnvStore & {
   values: Record<string, string>;
@@ -242,6 +299,7 @@ export function memoryEnvStore(initial: Record<string, string> = {}): EnvStore &
       Object.fromEntries(names.flatMap((n) => (n in values ? [[n, values[n] as string]] : []))),
     async put(name, value, o) {
       if (!ENV_KEY.test(name)) throw new Error(`env store: bad name ${name}`);
+      guard(name, value, values[name], o);
       values[name] = value;
       expires.set(name, describe(o));
     },
@@ -268,23 +326,39 @@ export function syncedEnvStore(
   o: { unshared?: Unshared } = {},
 ): SyncedEnvStore {
   const unshared = o.unshared ?? memoryUnshared();
-  /** Each name whose last put stayed here: its local value, with its expiry, into the shared store. */
-  async function share(): Promise<string[]> {
+  /**
+   * Each name whose last put stayed here: its local value, with its expiry, into the shared store.
+   * A name whose shared value changed meanwhile stays unshared and the call throws `WouldReplace`,
+   * unless `replace` says this machine's value wins.
+   */
+  async function share(so: { replace?: boolean } = {}): Promise<string[]> {
     const names = unshared.names();
     if (!names.length) return [];
     const [values, listed] = await Promise.all([local.getMany(names), local.list()]);
     const expiry = new Map(listed.map((e) => [e.name, e.expiresAt]));
     const sent: string[] = [];
+    let refused: WouldReplace | null = null;
     for (const name of names) {
       const value = values[name];
       // Gone from this machine since: nothing is left to share.
       if (value !== undefined) {
         const expiresAt = expiry.get(name) ?? undefined;
-        await shared.put(name, value, expiresAt ? { expiresAt } : {});
+        try {
+          await shared.put(name, value, {
+            ...(expiresAt ? { expiresAt } : {}),
+            ...(so.replace ? { replace: true } : {}),
+          });
+        } catch (err) {
+          if (!(err instanceof WouldReplace)) throw err;
+          // Stays unshared; the rest still go.
+          refused ??= new WouldReplace(name, err.heldLength, "the shared store");
+          continue;
+        }
         sent.push(name);
       }
       unshared.drop(name);
     }
+    if (refused) throw refused;
     return sent;
   }
   return {
@@ -310,11 +384,18 @@ export function syncedEnvStore(
       return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
     },
     async put(name, value, o) {
-      await local.put(name, value, o);
+      // Both sides are asked before either is written: a refusal leaves both as they were.
+      // A shared store that does not answer is not asked; `share()` asks it later.
+      if (!o?.replace) {
+        guard(name, value, await local.get(name), o, "this machine");
+        guard(name, value, await shared.get(name).catch(() => null), o, "the shared store");
+      }
+      const checked = { ...o, replace: true };
+      await local.put(name, value, checked);
       // Remembered before the shared write: a crash in between still shares it later.
       unshared.add(name);
       try {
-        await shared.put(name, value, o);
+        await shared.put(name, value, checked);
         unshared.drop(name);
       } catch (err) {
         throw new Error(
@@ -335,7 +416,7 @@ export function syncedEnvStore(
 /** A synced store, and the one call that sends what a refused shared write left on this machine. */
 export interface SyncedEnvStore extends EnvStore {
   /** Put every unshared name's local value into the shared store; answers the names sent. */
-  share(): Promise<string[]>;
+  share(o?: { replace?: boolean }): Promise<string[]>;
 }
 
 /** Names whose last put reached only this machine. Names only, never values. */
@@ -445,6 +526,7 @@ export function envFileStore(path: string, env: NodeJS.ProcessEnv = process.env)
     async put(name, value, o) {
       if (!ENV_KEY.test(name)) throw new Error(`env file: bad name ${name}`);
       if (/[\r\n]/.test(value)) throw new Error(`env file: ${name} spans lines`);
+      guard(name, value, parseDotenv(text()).find((e) => e.name === name)?.value, o, file);
       const { out, at } = without(name);
       const add = [...(o?.expiresAt ? [`# ${name} ${describe(o)}`] : []), `${name}=${value}`];
       out.splice(at < 0 ? out.length : at, 0, ...add);
