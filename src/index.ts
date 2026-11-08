@@ -70,6 +70,28 @@ export {
   WouldReplace,
 } from "./env-store.js";
 export {
+  allowHostsRegex,
+  type GateConfig,
+  type GateKey,
+  type GatePlan,
+  gateConfigSchema,
+  layer,
+  planGate,
+  SENTINEL,
+  sentinel,
+  VENDOR_HOSTS,
+} from "./gate/plan.js";
+export {
+  auditLine,
+  type GateEvent,
+  type GateOptions,
+  gate,
+  loadGateConfig,
+  type RunningGate,
+  readSources,
+  writeRoleFiles,
+} from "./gate/run.js";
+export {
   type CredentialHistory,
   type CredentialVersion,
   changedFields,

@@ -1,12 +1,15 @@
 {
   "name": "credvault",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "license": "PolyForm-Strict-1.0.0",
   "packageManager": "pnpm@9.15.0",
   "description": "Keep the credentials an automation signs in with: sealed at rest, shared through SSM, every use audited, expiries watched.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "credvault": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -15,6 +18,7 @@
   },
   "files": [
     "dist",
+    "gate",
     "README.md",
     "LICENSE.md"
   ],
