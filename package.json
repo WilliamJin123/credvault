@@ -46,11 +46,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wrenautomation/credvault.git"
+    "url": "git+https://github.com/WilliamJin123/credvault.git"
   },
-  "homepage": "https://github.com/wrenautomation/credvault#readme",
+  "homepage": "https://github.com/WilliamJin123/credvault#readme",
   "bugs": {
-    "url": "https://github.com/wrenautomation/credvault/issues"
+    "url": "https://github.com/WilliamJin123/credvault/issues"
   },
   "keywords": [
     "credentials",
