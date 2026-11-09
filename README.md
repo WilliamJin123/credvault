@@ -14,6 +14,7 @@ npm install credvault
 | --- | --- |
 | `fileCredentials(path, cipher)` | Logins by site name (`github`, `google@ops`). A 0600 JSON file, sealed with AES-256-GCM. |
 | `roles` on a credential | What the account is for on its site (`main`, `alt`), `ROLE_NAME` words. Travels with the login like any field; which role names which account is the app's rule. |
+| `details` on a credential | Fixed facts a site asks for besides the login (`memberNumber`, `deliveryPostal`, `warehouse`), by camelCase name (`DETAIL_NAME`). Sealed, pushed, kept in history and pulled like any field. A login field's name (`RESERVED_DETAILS`) is refused. |
 | `keychainKey({ service })` | The seal key, kept in the macOS Keychain. Made on first use. |
 | `envCredentials(env, { prefix })` | The same logins read from env, for containers. Read-only. |
 | `pushCredentials` / `pullCredentials` | Move logins between a laptop and the shared store: every field, passkeys and recovery codes as JSON. Canaries stay put. |

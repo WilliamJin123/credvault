@@ -17,6 +17,18 @@ const expandHome = (p: string) => (p.startsWith("~/") ? `${homedir()}${p.slice(1
 /** A role name: lowercase, starts with a letter; never an `@`, so it cannot pass for a username. */
 export const ROLE_NAME = /^[a-z][a-z0-9.-]{0,31}$/;
 
+/** A detail name: camelCase, starts with a letter (`memberNumber`, `deliveryPostal`). */
+export const DETAIL_NAME = /^[a-z][A-Za-z0-9]{0,31}$/;
+/** Names a caller already gives a login's own fields; a detail never takes one. */
+export const RESERVED_DETAILS: readonly string[] = [
+  "username",
+  "password",
+  "code",
+  "phone",
+  "phoneLocal",
+  "email",
+];
+
 export const credentialSchema = z
   .object({
     username: z.string().min(1),
@@ -73,6 +85,19 @@ export const credentialSchema = z
      */
     roles: z
       .array(z.string().regex(ROLE_NAME, "a role is a lowercase word (a-z, 0-9, . and -)"))
+      .optional(),
+    /**
+     * Fixed facts the site asks for besides the login (a member number, a
+     * delivery postal code, a home store), by name. Sealed with the rest.
+     */
+    details: z
+      .record(
+        z
+          .string()
+          .regex(DETAIL_NAME, "a detail name is camelCase (a-z, A-Z, 0-9), starts with a-z")
+          .refine((k) => !RESERVED_DETAILS.includes(k), "that name is a login field"),
+        z.string().min(1),
+      )
       .optional(),
   })
   .refine((c) => c.password || c.via, { message: "a credential has a password or a via provider" });
@@ -204,6 +229,7 @@ const JSON_FIELDS = [
   ["RECOVERY_CODES", "recoveryCodes"],
   ["PASSKEYS", "passkeys"],
   ["ROLES", "roles"],
+  ["DETAILS", "details"],
 ] as const;
 /** Every env field a credential can use: what a push clears when the credential no longer has it. */
 export const CREDENTIAL_ENV_FIELDS: readonly string[] = [...STRING_FIELDS, ...JSON_FIELDS].map(
@@ -212,7 +238,7 @@ export const CREDENTIAL_ENV_FIELDS: readonly string[] = [...STRING_FIELDS, ...JS
 
 /**
  * A credential as env entries, every field of it: the strings as they are,
- * recovery codes and passkeys as JSON. Empty fields are left out. A
+ * recovery codes, passkeys, roles and details as JSON. Empty fields are left out. A
  * canary's entries are never asked for (see `pushCredentials`).
  */
 export function credentialEnv(
@@ -224,7 +250,7 @@ export function credentialEnv(
     ...STRING_FIELDS.map(([f, k]): [string, string | undefined] => [f, cred[k]]),
     ...JSON_FIELDS.map(([f, k]): [string, string | undefined] => [
       f,
-      cred[k]?.length ? JSON.stringify(cred[k]) : undefined,
+      cred[k] && Object.keys(cred[k]).length ? JSON.stringify(cred[k]) : undefined,
     ]),
   ];
   return fields
@@ -370,6 +396,8 @@ export async function pullCredentials(
       ...cred,
       // A store pushed before codes travelled has none: the ones here stay.
       recoveryCodes: cred.recoveryCodes.length ? cred.recoveryCodes : (here?.recoveryCodes ?? []),
+      // Details here the store lacks stay; the store's win on a clash.
+      ...(cred.details || here?.details ? { details: { ...here?.details, ...cred.details } } : {}),
       passkeys: [
         ...cred.passkeys,
         ...(here?.passkeys ?? []).filter((p) => !shared.has(p.credentialId)),

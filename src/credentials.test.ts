@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   credentialEnv,
+  credentialSchema,
   envCredentials,
   fileCredentials,
   layeredCredentials,
@@ -117,7 +118,7 @@ describe("credentials", () => {
         recoveryCodes: ["r1", "r2"],
         passkeys: [key("shared")],
       },
-      "b@two": { username: "b", via: "google", roles: ["main"] },
+      "b@two": { username: "b", via: "google", roles: ["main"], details: { memberNumber: "42" } },
       stripe: { username: "bait", password: "x", canary: true },
     });
     const kv = new Map<string, string>();
@@ -138,6 +139,7 @@ describe("credentials", () => {
       "CRED_B__TWO_USERNAME",
       "CRED_B__TWO_VIA",
       "CRED_B__TWO_ROLES",
+      "CRED_B__TWO_DETAILS",
     ]);
     const other = memoryCredentials({
       a: { username: "old", password: "old", passkeys: [key("here")] },
@@ -145,6 +147,7 @@ describe("credentials", () => {
     const first = await pullCredentials(store, other);
     expect(first).toEqual({ written: ["b@two"], kept: ["a"] });
     expect((await other.get("b@two"))?.roles).toEqual(["main"]);
+    expect((await other.get("b@two"))?.details).toEqual({ memberNumber: "42" });
     expect((await other.get("a"))?.password).toBe("old");
     const second = await pullCredentials(store, other, ["a"], { overwrite: true });
     expect(second).toEqual({ written: ["a"], kept: [] });
@@ -362,4 +365,22 @@ describe("a file sealed before a rename", () => {
       expect(readFileSync(file, "utf8")).toContain("credvault-sealed-v1");
     },
   );
+});
+
+describe("details", () => {
+  it("holds camelCase names, never a login field's", () => {
+    const base = { username: "u", password: "p" };
+    expect(credentialSchema.parse({ ...base, details: { deliveryPostal: "M5T" } }).details).toEqual(
+      {
+        deliveryPostal: "M5T",
+      },
+    );
+    for (const bad of [
+      { password: "x" },
+      { "member-number": "1" },
+      { Member: "1" },
+      { warehouse: "" },
+    ])
+      expect(() => credentialSchema.parse({ ...base, details: bad })).toThrow();
+  });
 });
