@@ -106,12 +106,18 @@ const SEED_LENGTHS = [32, 16, 64, 26, 52, 20, 24, 40];
 function cutRun(run: string): string | null {
   const tokens = run.trim().split(/[\s-]+/);
   const prefixes = tokens.map((_, i) => tokens.slice(0, i + 1).join(""));
+  // no digit and uneven groups ("passcode from your"): words, not a key
+  const key = (n: number) => {
+    const used = tokens.slice(0, n);
+    const words = n > 1 && !/[2-7]/.test(prefixes[n - 1] ?? "") && used.some((t) => t.length !== 4);
+    return words ? null : (prefixes[n - 1] ?? null);
+  };
   for (const len of SEED_LENGTHS) {
-    const key = prefixes.find((p) => p.length === len);
-    if (key) return key;
+    const i = prefixes.findIndex((p) => p.length === len);
+    if (i >= 0) return key(i + 1);
   }
   const whole = tokens.join("");
-  return whole.length >= 16 && whole.length % 2 === 0 ? whole : null;
+  return whole.length >= 16 && whole.length % 2 === 0 ? key(tokens.length) : null;
 }
 
 /**

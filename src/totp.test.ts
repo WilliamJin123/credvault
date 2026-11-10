@@ -55,5 +55,7 @@ describe("totp", () => {
     expect(findTotpSecret(`Enter the passcode from your app\n${plaid}`)).toBe(
       "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
     );
+    // the key not drawn yet: nothing, never the prose
+    expect(findTotpSecret("Enter the passcode from your app")).toBeNull();
   });
 });
