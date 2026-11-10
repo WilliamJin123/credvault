@@ -48,4 +48,12 @@ describe("totp", () => {
     expect(findTotpSecret("key: jbsw y3dp ehpk 3pxp then tap add")).toBe("JBSWY3DPEHPK3PXP");
     expect(findTotpSecret("MAKE SURE TIME BASED IS SELECTED")).toBeNull();
   });
+  it("takes the key over a run of prose words before it", () => {
+    const plaid =
+      "Alternatively, enter the following secret:\nJBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP\nEnter the passcode from your app";
+    expect(findTotpSecret(plaid)).toBe("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
+    expect(findTotpSecret(`Enter the passcode from your app\n${plaid}`)).toBe(
+      "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+    );
+  });
 });

@@ -102,19 +102,30 @@ const MANUAL_KEYS = [
  */
 const SEED_LENGTHS = [32, 16, 64, 26, 52, 20, 24, 40];
 
+/** One run cut to a seed length, else whole when it can be one; null when it cannot. */
+function cutRun(run: string): string | null {
+  const tokens = run.trim().split(/[\s-]+/);
+  const prefixes = tokens.map((_, i) => tokens.slice(0, i + 1).join(""));
+  for (const len of SEED_LENGTHS) {
+    const key = prefixes.find((p) => p.length === len);
+    if (key) return key;
+  }
+  const whole = tokens.join("");
+  return whole.length >= 16 && whole.length % 2 === 0 ? whole : null;
+}
+
+/**
+ * Every run on the page, best first: a digit (prose has none; a 32-letter seed lacks
+ * one ~0.1% of the time), then upper case. Plaid's "passcode from your app" cut to 16
+ * and won over the real key (11-10).
+ */
 function manualKey(text: string): string | null {
-  for (const re of MANUAL_KEYS)
-    for (const m of text.matchAll(re)) {
-      const tokens = m[0].trim().split(/[\s-]+/);
-      const prefixes = tokens.map((_, i) => tokens.slice(0, i + 1).join(""));
-      for (const len of SEED_LENGTHS) {
-        const key = prefixes.find((p) => p.length === len);
-        if (key) return key.toUpperCase();
-      }
-      const whole = tokens.join("");
-      if (whole.length >= 16 && whole.length % 2 === 0) return whole.toUpperCase();
-    }
-  return null;
+  const keys = MANUAL_KEYS.flatMap((re) =>
+    [...text.matchAll(re)].map((m) => cutRun(m[0])).filter((k): k is string => k !== null),
+  );
+  const rank = (k: string) => (/[2-7]/.test(k) ? 0 : 2) + (k === k.toUpperCase() ? 0 : 1);
+  const best = keys.map((k, i) => ({ k, i })).sort((a, b) => rank(a.k) - rank(b.k) || a.i - b.i)[0];
+  return best ? best.k.toUpperCase() : null;
 }
 
 /** The seed in page text or HTML: a URI wins, then a manual-entry key. Null when neither is there. */
