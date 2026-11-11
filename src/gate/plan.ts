@@ -59,6 +59,24 @@ export const gateConfigSchema = z.object({
   /** Hosts per name or glob, for a key with no vendor (`RESTATE_AUTH_TOKEN`), or to replace the vendor's list. */
   hosts: z.record(z.string().regex(NAME_GLOB), z.array(z.string().regex(HOST)).min(1)).default({}),
   roles: z.record(z.string().regex(/^[a-z][a-z0-9-]{0,31}$/), roleSchema),
+  /** The read relay (`relay.ts`): a loopback proxy to a vendor proxy whose login is `key`. */
+  relay: z
+    .object({
+      port: z.number().int().min(1024).max(65535),
+      /** The source name holding `login:pass@host:port`. */
+      key: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+      /** On the login: the vendor's targeting (`__cr.us`). */
+      suffix: z
+        .string()
+        .regex(/^[\w.;-]*$/)
+        .default(""),
+      /** The vendor's sticky ports, "10000-20000": one per client session. */
+      sticky: z
+        .string()
+        .regex(/^\d+-\d+$/)
+        .optional(),
+    })
+    .optional(),
 });
 export type GateConfig = z.infer<typeof gateConfigSchema>;
 

@@ -22,6 +22,7 @@ import {
   layer,
   planGate,
 } from "./plan.js";
+import { startRelay, upstreamOf } from "./relay.js";
 
 /** Shipped beside dist: `<package>/gate/addon.py`. */
 const ADDON = new URL("../../gate/addon.py", import.meta.url).pathname;
@@ -114,7 +115,9 @@ export interface GateOptions {
 export async function gate(config: GateConfig, o: GateOptions = {}): Promise<RunningGate> {
   const { service, account } = config.keychain;
   const key = o.gateKey ?? keychainKey(account ? { service, account } : { service });
-  const plan = planGate(config, await readSources(config.sources), key);
+  const values = await readSources(config.sources);
+  const plan = planGate(config, values, key);
+  const relay = config.relay ? await relayOf(config.relay, values) : null;
   await writeRoleFiles(config.dir, plan);
   const confdir = join(config.dir, "ca");
   await mkdir(confdir, { recursive: true, mode: 0o700 });
@@ -175,7 +178,27 @@ export async function gate(config: GateConfig, o: GateOptions = {}): Promise<Run
   await waitFor(() => existsSync(join(confdir, CA_CERT)), done, "the gate CA");
   await writeBundle(config.dir, confdir);
   for (const [role, r] of keyed) await waitPort(r.port, done, `role ${role}`);
-  return { child, plan, done, stop: () => child.kill("SIGTERM") };
+  return {
+    child,
+    plan,
+    done,
+    stop: () => {
+      relay?.close();
+      child.kill("SIGTERM");
+    },
+  };
+}
+
+async function relayOf(r: NonNullable<GateConfig["relay"]>, values: Map<string, string>) {
+  const proxy = values.get(r.key);
+  if (!proxy) throw new Error(`relay: ${r.key} is in no source`);
+  const sticky = r.sticky?.split("-").map(Number) as [number, number] | undefined;
+  return startRelay({
+    port: r.port,
+    upstream: upstreamOf(proxy, r.suffix),
+    ...(sticky ? { sticky } : {}),
+    onError: (why) => console.error(`credvault gate: relay ${why}`),
+  });
 }
 
 /** `<dir>/ca.pem` (the gate CA, for `NODE_EXTRA_CA_CERTS`) and `<dir>/ca-bundle.pem` (system roots + it). */
