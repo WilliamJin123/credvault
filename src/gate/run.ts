@@ -23,6 +23,7 @@ import {
   planGate,
 } from "./plan.js";
 import { startRelay, upstreamOf } from "./relay.js";
+import { usageLog, usagePath } from "./usage.js";
 
 /** Shipped beside dist: `<package>/gate/addon.py`. */
 const ADDON = new URL("../../gate/addon.py", import.meta.url).pathname;
@@ -117,7 +118,7 @@ export async function gate(config: GateConfig, o: GateOptions = {}): Promise<Run
   const key = o.gateKey ?? keychainKey(account ? { service, account } : { service });
   const values = await readSources(config.sources);
   const plan = planGate(config, values, key);
-  const relay = config.relay ? await relayOf(config.relay, values) : null;
+  const relay = config.relay ? await relayOf(config.relay, values, config.dir) : null;
   await writeRoleFiles(config.dir, plan);
   const confdir = join(config.dir, "ca");
   await mkdir(confdir, { recursive: true, mode: 0o700 });
@@ -189,7 +190,11 @@ export async function gate(config: GateConfig, o: GateOptions = {}): Promise<Run
   };
 }
 
-async function relayOf(r: NonNullable<GateConfig["relay"]>, values: Map<string, string>) {
+async function relayOf(
+  r: NonNullable<GateConfig["relay"]>,
+  values: Map<string, string>,
+  dir: string,
+) {
   const proxy = values.get(r.key);
   if (!proxy) throw new Error(`relay: ${r.key} is in no source`);
   const sticky = r.sticky?.split("-").map(Number) as [number, number] | undefined;
@@ -198,6 +203,11 @@ async function relayOf(r: NonNullable<GateConfig["relay"]>, values: Map<string, 
     upstream: upstreamOf(proxy, r.suffix),
     ...(sticky ? { sticky } : {}),
     onError: (why) => console.error(`credvault gate: relay ${why}`),
+    onUse: usageLog(usagePath(dir), {
+      alertGb: r.alertGb,
+      pricePerGb: r.pricePerGb,
+      alert: (line) => console.error(`credvault gate: ${line}`),
+    }),
   });
 }
 

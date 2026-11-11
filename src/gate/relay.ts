@@ -6,8 +6,21 @@
  */
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, request, type Server } from "node:http";
-import { connect } from "node:net";
+import { connect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
+
+/** One tunnel or request, as the vendor bills it: bytes on our socket to it, both ways. */
+export interface RelayUse {
+  at: string;
+  /** `host:port` for a tunnel, the URL's host for plain http. */
+  host: string;
+  session: string | null;
+  up: number;
+  down: number;
+  ms: number;
+  /** The vendor's answer to CONNECT ("200", "407"), or "error". */
+  status: string;
+}
 
 export interface RelayUpstream {
   host: string;
@@ -61,9 +74,25 @@ export function startRelay(o: {
   upstream: RelayUpstream;
   sticky?: readonly [number, number];
   onError?: (why: string) => void;
+  /** Called once per tunnel or request, when its vendor socket closes. */
+  onUse?: (u: RelayUse) => void;
 }): Promise<Server> {
   const up = o.upstream;
   const fail = o.onError ?? (() => {});
+  const meter = (vendor: Socket, host: string, session: string | null, status: () => string) => {
+    const t0 = Date.now();
+    vendor.once("close", () =>
+      o.onUse?.({
+        at: new Date(t0).toISOString(),
+        host,
+        session,
+        up: vendor.bytesWritten,
+        down: vendor.bytesRead,
+        ms: Date.now() - t0,
+        status: status(),
+      }),
+    );
+  };
   const server = createServer((req, res) => {
     // plain http: the absolute URL goes to the vendor as a proxy request
     if (!/^http:\/\//i.test(req.url ?? "")) {
@@ -73,18 +102,26 @@ export function startRelay(o: {
     const headers = { ...req.headers };
     delete headers["proxy-authorization"];
     delete headers["proxy-connection"];
+    const session = sessionOf(req);
+    let status = "error";
     const out = request(
       {
         host: up.host,
-        port: portFor(sessionOf(req), up.port, o.sticky),
+        port: portFor(session, up.port, o.sticky),
+        // one socket per request, so its byte counts are this request's
+        agent: false,
         method: req.method,
         path: req.url,
         headers: { ...headers, "proxy-authorization": up.auth },
       },
       (r) => {
+        status = String(r.statusCode ?? 502);
         res.writeHead(r.statusCode ?? 502, r.headers);
         r.pipe(res);
       },
+    );
+    out.once("socket", (sock) =>
+      meter(sock as Socket, new URL(req.url as string).host, session, () => status),
     );
     out.on("error", (err) => {
       fail(`http ${req.url}: ${err.message}`);
@@ -96,7 +133,10 @@ export function startRelay(o: {
 
   server.on("connect", (req: IncomingMessage, client: Duplex, head: Buffer) => {
     const target = req.url ?? "";
-    const s = connect(portFor(sessionOf(req), up.port, o.sticky), up.host);
+    const session = sessionOf(req);
+    const s = connect(portFor(session, up.port, o.sticky), up.host);
+    let status = "error";
+    meter(s, target, session, () => status);
     s.setTimeout(IDLE_MS, () => s.destroy());
     const close = () => {
       s.destroy();
@@ -121,11 +161,13 @@ export function startRelay(o: {
         return;
       }
       s.off("data", onHead);
-      const status = buf.subarray(0, end).toString().split(" ")[1] ?? "";
+      status = buf.subarray(0, end).toString().split(" ")[1] || "error";
       if (status !== "200") {
         fail(`connect ${target}: vendor ${status}`);
         // a 407 is our login, not the client's: never ask the client to sign in
-        client.end(`HTTP/1.1 ${status === "407" ? "502" : status || "502"} Relay Upstream\r\n\r\n`);
+        client.end(
+          `HTTP/1.1 ${status === "407" || status === "error" ? "502" : status} Relay Upstream\r\n\r\n`,
+        );
         s.destroy();
         return;
       }

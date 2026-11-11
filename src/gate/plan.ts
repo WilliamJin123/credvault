@@ -71,6 +71,10 @@ export const gateConfigSchema = z.object({
         .regex(/^[\w.;-]*$/)
         .default(""),
       /** The vendor's sticky ports, "10000-20000": one per client session. */
+      /** An alert in the gate log each time a UTC day passes another this many GB. */
+      alertGb: z.number().positive().default(0.5),
+      /** The vendor's price, for the usage summary. */
+      pricePerGb: z.number().nonnegative().default(1),
       sticky: z
         .string()
         .regex(/^\d+-\d+$/)

@@ -1,7 +1,9 @@
 import { createServer as httpServer, type IncomingMessage, type Server } from "node:http";
 import { type AddressInfo, connect, createServer, type Server as NetServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { portFor, startRelay, upstreamOf } from "./relay.js";
+import { portFor, type RelayUse, startRelay, upstreamOf } from "./relay.js";
+
+let relayDone: () => void = () => {};
 
 const portOf = (s: Server | NetServer) => (s.address() as AddressInfo).port;
 const listen = <T extends Server | NetServer>(s: T) =>
@@ -58,14 +60,27 @@ describe("read relay", () => {
         });
       }),
     );
+    const uses: RelayUse[] = [];
+    const used = new Promise<void>((r) => {
+      relayDone = r;
+    });
     const relay = await startRelay({
       port: 0,
       upstream: upstreamOf(`login:pass@127.0.0.1:${portOf(vendor)}`, "__cr.us"),
+      onUse: (u) => {
+        uses.push(u);
+        relayDone();
+      },
     });
     open.push(echo, vendor, relay);
     const r = await tunnel(portOf(relay), "www.youtube.com:443", "s1");
     expect(r).toEqual({ status: "200", echo: "ping" });
     expect(seen).toEqual([`Basic ${Buffer.from("login__cr.us:pass").toString("base64")}`]);
+    await used;
+    expect(uses).toMatchObject([{ host: "www.youtube.com:443", session: "s1", status: "200" }]);
+    // CONNECT line + "ping" out; 200 line + echo back
+    expect(uses[0]?.up).toBeGreaterThan(4);
+    expect(uses[0]?.down).toBeGreaterThan(4);
   });
 
   it("answers 502 when the vendor refuses our login", async () => {
